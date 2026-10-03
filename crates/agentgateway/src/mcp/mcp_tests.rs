@@ -1076,6 +1076,51 @@ async fn stateful_streamable_http_rejects_no_session_non_initialize_messages() {
 }
 
 #[tokio::test]
+async fn stateful_unrecognized_session_id_returns_404_so_clients_reinitialize() {
+	let mock = mock_streamable_http_server(true).await;
+	let (_bind, io) = setup_proxy(&mock, true, false).await;
+	let client = reqwest::Client::new();
+	let url = format!("http://{io}/mcp");
+	let list = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}});
+
+	let unknown = mcp_json_post(&client, &url, &list)
+		.header("mcp-session-id", "not-a-real-session-id")
+		.header("mcp-protocol-version", "2025-06-18")
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(unknown.status(), reqwest::StatusCode::NOT_FOUND);
+
+	let init = mcp_json_post(&client, &url, &mcp_initialize_body())
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(init.status(), reqwest::StatusCode::OK);
+	let sid = init
+		.headers()
+		.get("mcp-session-id")
+		.expect("stateful initialize creates a session")
+		.to_str()
+		.unwrap()
+		.to_string();
+	let deleted = client
+		.delete(&url)
+		.header("mcp-session-id", &sid)
+		.header("mcp-protocol-version", "2025-06-18")
+		.send()
+		.await
+		.unwrap();
+	assert!(deleted.status().is_success(), "DELETE: {}", deleted.status());
+	let reused = mcp_json_post(&client, &url, &list)
+		.header("mcp-session-id", &sid)
+		.header("mcp-protocol-version", "2025-06-18")
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(reused.status(), reqwest::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn modern_stateful_streamable_http_does_not_use_sessions() {
 	let mock = mock_streamable_http_server(false).await;
 	let (_bind, io) = setup_proxy(&mock, true, false).await;
